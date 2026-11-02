@@ -22,6 +22,8 @@ suppressWarnings({
 parser <- ArgumentParser(description = 'Process Salmon quantifications and GTF')
 parser$add_argument('genome', type = "character", help = 'GTF file path')
 parser$add_argument('output_path', type = "character", help = 'Output path for merged TPM summary')
+parser$add_argument('pseudocount', type = "double", nargs = '?', default = 1,
+                    help = 'added to each TPM before averaging; guards the within-gene division and regularises lowly-expressed genes')
 args <- parser$parse_args()
 
 #- Opening
@@ -41,8 +43,15 @@ RECEPT = lapply(bulk.files, function(x){
     curr$sample = basename(x)
     return(curr)
 }) %>% data.table::rbindlist() %>%
-    #avoiding division by zero
-    dplyr::mutate(TPM = TPM + 1) %>%
+    # Pseudocount: guards the within-gene division below, and pulls lowly-expressed
+    # genes' priors toward uniform. At the original value of 1 that pull was strong --
+    # on the B32 pilot, 28.9% of multi-isoform genes ended up within 15% of uniform,
+    # i.e. the prior told the EM nothing. At 0.1 that falls to 18.6% while only 395
+    # genes (1.8%) gain an isoform whose prior drops below 1% of uniform, which would
+    # effectively exclude it from the EM. Going to 0.01 pushes that to 18.6% of genes,
+    # which asks too much of salmon's zeros: ~20% of reads map here, 3'-tagged against
+    # full-length transcript models, so a zero TPM is weak evidence of absence.
+    dplyr::mutate(TPM = TPM + args$pseudocount) %>%
     #get MeanTPM & discard null transcrips in bulk
     dplyr::group_by(Name) %>%
     dplyr::reframe(meanTPM = mean(TPM)) %>%

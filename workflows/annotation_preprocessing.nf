@@ -53,7 +53,7 @@ process tpm_counts_average{
         tuple file("merge_quants.txt"), file("*.gtf")
     script:
         """
-        Rscript ${baseDir}/src/quantification_processing.R ${gtf_annotation_reference} merge_quants.txt
+        Rscript ${baseDir}/src/quantification_processing.R ${gtf_annotation_reference} merge_quants.txt ${params.tpm_pseudocount}
         gawk '{print>\$1".gtf"}' reduced_annotation.tsv
         """
 }

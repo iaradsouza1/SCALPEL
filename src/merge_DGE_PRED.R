@@ -17,10 +17,11 @@ args = parser$parse_args()
 preds = fread(args$PRED, col.names=c("bc","gene_name","transcript_name","tr_prob"))
 dge = fread(args$DGE)
 
-#melting
-dge = melt(dge)
-
 #renaming
+# read_10X.R now writes the DGE long (GENE / bc / counts, nonzero only), so the melt()
+# that used to reshape a dense genes x cells table is no longer needed. The left_join
+# below is unaffected: absent (bc, gene) pairs become NA and are coerced to 0, exactly
+# as a stored zero would have been.
 colnames(dge) = c("gene_name","bc","counts")
 
 #left_joining by barcodes & gene_name

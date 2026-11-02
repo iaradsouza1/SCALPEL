@@ -122,8 +122,10 @@ process bam_splitting {
     else
         """
         #Chromium_seq
-        #index input bam file
-        samtools index ${bam} -@ 4 -o ./${bam.baseName}.bai
+        #Reuse the index already built for this BAM. Upstream rebuilt it here, which
+        #re-indexed the whole BAM once per chromosome (~25x per sample) while ignoring
+        #the bai passed in alongside it -- untenable on 36-90GB ROSMAP BAMs.
+        ln -sf ${bai} ./${bam.baseName}.bai
         #Filter reads , Remove duplicates and split by chromosome
         samtools view --subsample ${params.subsample} -b ${bam} -X ${bam.baseName}.bai ${chr} -D CB:${bc_path} --keep-tag "CB,UB" | samtools sort > tmp.bam
         #Remove all PCR duplicates ...
