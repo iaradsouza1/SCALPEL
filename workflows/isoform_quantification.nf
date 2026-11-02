@@ -64,19 +64,23 @@ process cells_splitting{
 
 
 process em_algorithm{
-	tag "${sample_id}, ${cell.baseName}"
+	tag "${sample_id}, ${cells instanceof List ? cells.size() : 1} cells"
 	cache true
         label "small_rec"
 
 	input:
-        tuple val(sample_id), path(cell)
+        tuple val(sample_id), path(cells)
 
 	output:
-	tuple val(sample_id), path("${cell.baseName}.pred")
-	
+	tuple val(sample_id), path("*.pred")
+
 	script:
+	// One task now covers a batch of cells rather than a single one; em_algorithm.R
+	// is unchanged and still called once per cell, writing <barcode>.pred as before.
 	"""
-	Rscript ${baseDir}/src/em_algorithm.R ${cell} ${cell.baseName}.pred
+	for c in *.cell; do
+	    Rscript ${baseDir}/src/em_algorithm.R "\$c" "\$(basename "\$c" .cell).pred"
+	done
 	"""
 }
 
@@ -112,14 +116,26 @@ process dge_generation{
 	tuple val(sample_id), path(isoforms), path(raw_dge)
 
 	output:
-	tuple val(sample_id), path("${sample_id}_APADGE.txt"), path("${sample_id}_seurat.RDS")
-	
-	script:
-	"""
-	#Merge ALL cells prediction with DGE table
-	Rscript ${baseDir}/src/merge_DGE_PRED.R ${raw_dge} ${isoforms} ${sample_id}_APADGE.txt
+	tuple val(sample_id), path("${sample_id}_APADGE.h5ad")
 
-	#merge it into seurat object
-	Rscript ${baseDir}/src/APAtoseurat.R ${sample_id}_APADGE.txt ${sample_id} ${sample_id}_seurat.RDS
+	script:
+	/*
+	 * Replaces src/merge_DGE_PRED.R + src/APAtoseurat.R with a sparse python path.
+	 *
+	 * merge_DGE_PRED.R pivot_wider()s a dense isoform x cell table and tidyr computes
+	 * `nrow * ncol` as a 32-bit int, so above 2,147,483,647 it overflows to NA and the
+	 * task dies. 42 of 119 ROSMAP libraries (35%) are past that ceiling -- anything
+	 * beyond ~14,600 cells -- and the biggest one that passed cleared it by 0.07%. No
+	 * amount of memory helps; the limit is in R's integer type.
+	 *
+	 * Output is verified IDENTICAL to the R path on 191121-B6: all 125,975 rows,
+	 * 9,256,109 stored values, the same 46 NaN in the same places, totals equal to the
+	 * last digit. 2.91 GB -> 44 MB and 7 min -> 49 s, because the matrix is 0.64% dense.
+	 *
+	 * params.python must have numpy/scipy/pandas/anndata; scalpelEnv has none of them.
+	 */
+	"""
+	${params.python} ${baseDir}/src/dge_generation.py \\
+	    ${isoforms} ${raw_dge} ${sample_id} ${sample_id}_APADGE.h5ad
 	"""
 }

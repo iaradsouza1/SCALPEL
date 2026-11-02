@@ -58,7 +58,7 @@ if (!params.sequencing) error("Missing --sequencing  [dropseq / chromium]")
 include { salmon_transcriptome_indexing; salmon_bulk_quantification; tpm_counts_average; isoform_selection_weighting } from './workflows/annotation_preprocessing.nf'
 include { samples_loading; bedfile_conversion; reads_mapping_and_filtering; ip_splitting; ip_filtering } from './workflows/reads_processing.nf'
 include { probability_distribution; fragment_probabilities; cells_splitting; em_algorithm; cells_merging; dge_generation } from './workflows/isoform_quantification.nf'
-include { differential_isoform_usage; generation_filtered_bams } from './workflows/apa_characterization.nf'
+include { generation_filtered_bams } from './workflows/apa_characterization.nf'
 
 
 
@@ -184,9 +184,31 @@ workflow isoform_quantification {
         fragment_probabilities(all_reads)
         cells_splitting(fragment_probabilities.out.groupTuple(by: 0))
 
-        /* perform em algorithm */
-        em_algorithm(cells_splitting.out.transpose())
-        cells_merging(em_algorithm.out.groupTuple(by: 0))
+        /* perform em algorithm
+         *
+         * cells_splitting emits one .cell file PER BARCODE (merge_and_writecells.R
+         * splits on $1 into "<barcode>.cell"). A bare .transpose() therefore created
+         * one Nextflow task per cell -- 1,609,469 of them for this cohort, each with
+         * its own work directory, input hash and SLURM submission. That is past what
+         * Nextflow handles, independently of how fast the EM itself is.
+         *
+         * Grouping into batches of params.em_batch cuts that to ~3.2k tasks. The
+         * per-cell .pred files are unchanged and cells_merging still just cats them,
+         * so the result is identical -- only the task granularity differs.
+         */
+        cells_splitting.out
+            .transpose()
+            .groupTuple(by: 0, size: params.em_batch, remainder: true)
+            .set{ em_batches }
+        em_algorithm(em_batches)
+
+        /* em_algorithm now emits one tuple per BATCH, carrying a list of .pred files.
+         * groupTuple alone would then hand cells_merging a list of lists, which does
+         * not get flattened for staging -- the task runs with no .pred present and
+         * `cat *.pred` fails. transpose() first splits each batch back into one .pred
+         * per emission, so groupTuple rebuilds the flat per-sample list the unbatched
+         * pipeline produced. */
+        cells_merging(em_algorithm.out.transpose().groupTuple(by: 0))
 
         /* DGE generation */
         dge_generation(cells_merging.out.join(samples_paths))
@@ -197,22 +219,24 @@ workflow isoform_quantification {
 
 
 workflow apa_characterization {
-    /* workflow for differential isoform usage analysis */
+    /* Merge the filtered BAM files.
+     *
+     * differential_isoform_usage is deliberately NOT called. It consumes the per-sample
+     * Seurat RDS objects, which dge_generation no longer produces: the deliverable here
+     * is the isoform x cell matrices themselves. It would also be unsound at this scale
+     * -- analysis_samples.R merge()s every object, and Seurat disambiguates colliding
+     * cell names with _1/_2 suffixes in list.files() order, while raw barcodes repeat
+     * across 123,806 of this cohort's 916,708 distinct values. Donor- and cell-type
+     * level analysis is done instead from the h5ad files plus config/demux_map.tsv,
+     * which keys on (library, barcode) and cannot collide.
+     */
     take:
-        seurat_objs
         all_bams
 
     main:
-        /* seurat objects merging */
-        differential_isoform_usage( seurat_objs.collect() )
-
-         /* Merge the filtered BAM files */
         all_bams.map{ it = it[0,2] }.set{ all_bams_sel }
         all_bams.map{ it = it[0,3] }.set{ all_rids }
         generation_filtered_bams( all_bams_sel, all_rids )
-
-    emit:
-        dius = differential_isoform_usage.out
 }
 
 
@@ -242,5 +266,5 @@ workflow {
     reads_processing.out.splitted_bams.groupTuple(by: 0).set{ all_bams }
     reads_processing.out.filtered_reads.map{ it = it[0,4] }.groupTuple(by:0).set{ all_readIDS }
     all_bams.join(all_readIDS, by:0).set{ all_bams_rids }
-    apa_characterization( isoform_quantification.out.flatMap{ it=it[2] }, all_bams_rids)
+    apa_characterization( all_bams_rids )
 }

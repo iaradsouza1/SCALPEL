@@ -77,6 +77,16 @@ res = Reduce(rbind, lapply(genetabs, function(x) em_algorithm(x)))
 cell = left_join(cell,res)
 cell = cell %>% dplyr::distinct(bc,gene_name,transcript_name,rel_abund)
 
+#drop transcripts with no abundance estimate. em_algorithm() above returns an EMPTY table
+#for a gene whose fragments all carry probability 0 ("Gene discarded"), so the left_join
+#leaves rel_abund NA for that gene's transcripts rather than removing them. Left in, the NA
+#arrives in merge_DGE_PRED.R as tr_prob, makes tr_counts NA, and is written to the h5ad as
+#NaN -- which then silently turns any downstream sum (pseudobulk over cells) into NaN.
+#Dropping is precisely what "discarded" means: pivot_wider(values_fill=0) there gives those
+#cells 0, as it does for any other unobserved (cell, transcript) pair. is.finite() rather
+#than !is.na() so a NaN escaping the M-step normalisation is caught by the same guard.
+cell = cell %>% dplyr::filter(is.finite(rel_abund))
+
 #rounding to 3dec threshold
 cell$rel_abund = round(cell$rel_abund, 3)
 
